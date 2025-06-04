@@ -1,0 +1,102 @@
+name: Dynamic Databricks Env
+on:
+  pull_request:
+    types: [opened, reopened, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      # Checkout code - using full GitHub path
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Azure Login
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.7"
+
+      # Set environment variables
+      - name: Set PR variables
+        run: |
+          echo "GIT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "PR_NUM=${{ github.event.number }}" >> $GITHUB_ENV
+
+      # Initialize Terraform
+      - name: Terraform Init
+        run: |
+          terraform -chdir=infrastructure/environments/dynamic init \
+            -backend-config="resource_group_name=terraform-state-rg" \
+            -backend-config="storage_account_name=tfstate${{ env.PR_NUM }}" \
+            -backend-config="container_name=dynamic" \
+            -backend-config="key=${{ env.GIT_SHA }}.tfstate"
+
+      # Apply Terraform
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=infrastructure/environments/dynamic apply -auto-approve \
+            -var="git_sha=${{ env.GIT_SHA }}" \
+            -var="env_type=pr-${{ env.PR_NUM }}"
+
+      # Upload state file - using full GitHub path
+      - name: Upload Terraform State
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfstate-${{ env.PR_NUM }}
+          path: infrastructure/environments/dynamic/terraform.tfstate
+          retention-days: 1
+
+  destroy:
+    if: github.event.action == 'closed'
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Azure Login
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # Download state file - using full GitHub path
+      - name: Download Terraform State
+        uses: actions/download-artifact@v3
+        with:
+          name: tfstate-${{ github.event.number }}
+          path: infrastructure/environments/dynamic/
+
+      # Destroy resources
+      - name: Terraform Destroy
+        run: |
+          terraform -chdir=infrastructure/environments/dynamic init \
+            -backend-config="resource_group_name=terraform-state-rg" \
+            -backend-config="storage_account_name=tfstate${{ github.event.number }}" \
+            -backend-config="container_name=dynamic" \
+            -backend-config="key=${GITHUB_SHA::7}.tfstate"
+          
+          terraform -chdir=infrastructure/environments/dynamic destroy -auto-approve
