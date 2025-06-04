@@ -1,0 +1,73 @@
+name: Dynamic Databricks Env
+on:
+  pull_request:
+    types: [opened, reopened, closed]
+  workflow_dispatch:
+
+env:
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'  # Runs on PR open/reopen
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Azure Login
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}  # Service Principal JSON
+      
+      # Set dynamic name
+      - name: Set env vars
+        run: |
+          echo "GIT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "PR_NUM=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+      
+      # Terraform Apply
+      - uses: hashicorp/setup-terraform@v3
+      - run: |
+          terraform -chdir=infrastructure/environments/dynamic init \
+            -backend-config="resource_group_name=terraform-state-rg" \
+            -backend-config="storage_account_name=tfstate${{ env.PR_NUM }}" \
+            -backend-config="container_name=dynamic" \
+            -backend-config="key=${{ env.GIT_SHA }}.tfstate"
+          
+          terraform -chdir=infrastructure/environments/dynamic apply -auto-approve \
+            -var="git_sha=${{ env.GIT_SHA }}" \
+            -var="env_type=pr-${{ env.PR_NUM }}"
+      
+      # Upload state (alternative to remote backend)
+      - uses: actions/upload-artifact@v3
+        with:
+          name: tfstate-${{ env.PR_NUM }}
+          path: infrastructure/environments/dynamic/terraform.tfstate
+
+  destroy:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      # Download state
+      - uses: actions/download-artifact@v3
+        with:
+          name: tfstate-${{ github.event.pull_request.number }}
+          path: infrastructure/environments/dynamic/
+      
+      # Terraform Destroy
+      - uses: hashicorp/setup-terraform@v3
+      - run: |
+          terraform -chdir=infrastructure/environments/dynamic init \
+            -backend-config="resource_group_name=terraform-state-rg" \
+            -backend-config="storage_account_name=tfstate${{ github.event.pull_request.number }}" \
+            -backend-config="container_name=dynamic" \
+            -backend-config="key=${GITHUB_SHA::7}.tfstate"
+          
+          terraform -chdir=infrastructure/environments/dynamic destroy -auto-approve
