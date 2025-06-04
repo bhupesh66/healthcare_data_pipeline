@@ -19,7 +19,7 @@ jobs:
       # Azure Login
       - uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}  # Service Principal JSON
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       # Set dynamic name
       - name: Set env vars
@@ -40,7 +40,7 @@ jobs:
             -var="git_sha=${{ env.GIT_SHA }}" \
             -var="env_type=pr-${{ env.PR_NUM }}"
       
-      # Upload state (alternative to remote backend)
+      # Upload state
       - uses: actions/upload-artifact@v3
         with:
           name: tfstate-${{ env.PR_NUM }}
